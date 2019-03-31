@@ -109,6 +109,15 @@ public class LineReader {
     self.refreshCallback = refreshCallback
   }
 
+  // Preventing Deallocation Crashes - https://medium.com/over-engineering/a-background-repeating-timer-in-swift-412cecfd2ef9
+  deinit {
+    escapeSequenceTimer.setEventHandler {}
+    escapeSequenceTimer.cancel()
+    if escapeSequenceTimerIsSuspended {
+      escapeSequenceTimer.resume()
+    }
+  }
+
   public static var supportedByTerminal: Bool {
     return LineReader.supportedBy(terminal: Terminal.current)
   }
