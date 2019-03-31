@@ -36,8 +36,17 @@
 
 import Foundation
 
-
 public class LineReader {
+
+  public enum Input {
+    case move(Direction)
+    case character(Character)
+    case controlCharacter(ControlCharacters)
+
+    public enum Direction {
+      case up, right, down, left, home, end, wordStart, wordEnd
+    }
+  }
 
   /// Does this terminal support this line reader?
   public let termSupported: Bool
@@ -65,6 +74,12 @@ public class LineReader {
   /// A callback for handling hints
   private var hintsCallback: ((String) -> (String, TextProperties)?)?
 
+  /// A callback for handling inputs
+  private var inputCallback: ((String, Input) -> Bool)?
+
+  /// A callback for refreshing the buffer
+  private var refreshCallback: ((String) -> Void)?
+
   /// A POSIX file handle for the input
   private let inputFile: Int32
 
@@ -75,7 +90,9 @@ public class LineReader {
   public init?(inputFile: Int32 = STDIN_FILENO,
                outputFile: Int32 = STDOUT_FILENO,
                completionCallback: ((String) -> [String])? = nil,
-               hintsCallback: ((String) -> (String, TextProperties)?)? = nil) {
+               hintsCallback: ((String) -> (String, TextProperties)?)? = nil,
+               inputCallback: ((String, Input) -> Bool)? = nil,
+               refreshCallback: ((String) -> Void)? = nil) {
     self.inputFile = inputFile
     self.outputFile = outputFile
     self.currentTerm = Terminal.current
@@ -88,6 +105,8 @@ public class LineReader {
     self.history = LineReaderHistory()
     self.completionCallback = completionCallback
     self.hintsCallback = hintsCallback
+    self.inputCallback = inputCallback
+    self.refreshCallback = refreshCallback
   }
 
   public static var supportedByTerminal: Bool {
@@ -118,6 +137,65 @@ public class LineReader {
   /// optionally returning the hint and a tuple of RGB colours for the hint text.
   public func setHintsCallback(_ callback: @escaping (String) -> (String, TextProperties)?) {
     self.hintsCallback = callback
+  }
+
+  /// Adds a callback for any input. The callback is taking the buffer at the time of the
+  /// input and a case of the Input enum and returning a Boolean indicating whether the
+  /// input should have an effect on the buffer.
+  public func setInputCallback(_ callback: @escaping (String, Input) -> Bool) {
+    self.inputCallback = callback
+  }
+
+  /// Timer that helps differentiating single Esc's from Esc's that start an escape sequence.
+  private lazy var escapeSequenceTimer = DispatchSource.makeTimerSource(queue: escapeSequenceTimerQueue)
+  private let escapeSequenceTimerQueue = DispatchQueue(label: "")
+  private var escapeSequenceTimerIsSuspended = true
+
+  /// An internal proxy for inputCallback to facilitate falling back to the default method
+  /// and to handle escape sequences.
+  private func inputCallbackInternal(_ editState: EditState,
+                                     _ input: Input?,
+                                     _ executeIfCallbackReturnsTrue: @escaping (EditState) throws -> Void) throws {
+    guard let input = input else {
+      try executeIfCallbackReturnsTrue(editState)
+      return
+    }
+
+    // If an escape character is detected, it's not directly forwarded to the input callback
+    // but triggers a timer. If the escape character is the first character of an escape sequence
+    // the following input cancels the timer. If there is no following input the input callback
+    // will be called in the timer's eventHandler.
+    switch input {
+
+    case .controlCharacter(.Esc):
+      escapeSequenceTimerQueue.sync {
+        escapeSequenceTimer.setEventHandler {
+          _ = self.inputCallback?(editState.buffer, .controlCharacter(.Esc))
+        }
+        escapeSequenceTimer.schedule(deadline: .now() + .milliseconds(1), repeating: .never)
+        if escapeSequenceTimerIsSuspended {
+          escapeSequenceTimerIsSuspended = false
+          escapeSequenceTimer.resume()
+        }
+      }
+      try executeIfCallbackReturnsTrue(editState)
+
+    default:
+      escapeSequenceTimerQueue.sync {
+        if !escapeSequenceTimerIsSuspended {
+          escapeSequenceTimerIsSuspended = true
+          escapeSequenceTimer.suspend()
+        }
+      }
+      if inputCallback?(editState.buffer, input) ?? true {
+        try executeIfCallbackReturnsTrue(editState)
+      }
+    }
+  }
+
+  /// Adds a callback for refreshing the current buffer. The callback is taking the current buffer.
+  public func setRefreshCallback(_ callback: @escaping (String) -> Void) {
+    self.refreshCallback = callback
   }
 
   /// Loads history from a file and appends it to the current history buffer. This method can
@@ -169,7 +247,7 @@ public class LineReader {
                                           strippingNewline: strippingNewline)
     }
   }
-  
+
   private func readLineUnsupported(prompt: String,
                                    maxCount: Int?,
                                    strippingNewline: Bool) throws -> String {
@@ -195,7 +273,8 @@ public class LineReader {
                                 promptProperties: promptProperties,
                                 readProperties: readProperties,
                                 parenProperties: parenProperties)
-      while true {
+      var done = false
+      while !done {
         guard var char = self.readByte() else {
           return
         }
@@ -203,14 +282,18 @@ public class LineReader {
            let completionChar = try self.completeLine(editState: editState) {
           char = completionChar
         }
-        if let rv = try self.handleCharacter(char, editState: editState) {
-          if editState.moveEnd() {
-            try self.updateCursorPos(editState: editState)
+
+        let input = ControlCharacters(rawValue: char).map(Input.controlCharacter)
+        try inputCallbackInternal(editState, input) { _ in
+          if let rv = try self.handleCharacter(char, editState: editState) {
+            if editState.moveEnd() {
+              try self.updateCursorPos(editState: editState)
+            }
+            // It's unclear to me why it's necessary to set the cursor to column 0
+            try self.output(text: "\n" + AnsiCodes.setCursorColumn(0))
+            line = rv
+            done = true
           }
-          // It's unclear to me why it's necessary to set the cursor to column 0
-          try self.output(text: "\n" + AnsiCodes.setCursorColumn(0))
-          line = rv
-          return
         }
       }
     }
@@ -348,7 +431,7 @@ public class LineReader {
         }
         let char = Character(UnicodeScalar(scalar) ?? UnicodeScalar(" "))
         if editState.insertCharacter(char) {
-          try refreshLine(editState: editState)
+          try inputCallbackInternal(editState, .character(char), { try self.refreshLine(editState: $0) })
         } else {
           self.ringBell()
         }
@@ -362,6 +445,9 @@ public class LineReader {
   private func handleEscapeCode(editState: EditState) throws {
     let fst = self.readCharacter()
     switch fst {
+      case ControlCharacters.Esc.character?:
+        try inputCallbackInternal(editState, .controlCharacter(.Esc), handleEscapeCode)
+        break
       case "[":
         let snd = self.readCharacter()
         switch snd {
@@ -372,11 +458,11 @@ public class LineReader {
               case "~":
                 switch snd {
                   case "1", "7":
-                    try self.moveHome(editState: editState)
+                    try inputCallbackInternal(editState, .move(.home), moveHome)
                   case "3":
-                    try self.deleteCharacter(editState: editState)
+                    try inputCallbackInternal(editState, .controlCharacter(.Backspace), deleteCharacter)
                   case "4":
-                    try self.moveEnd(editState: editState)
+                    try inputCallbackInternal(editState, .move(.end), moveEnd)
                   default:
                     break
                 }
@@ -387,9 +473,9 @@ public class LineReader {
                 if fot == "2" {
                   switch fth {
                     case "C":
-                      try self.moveRight(editState: editState)
+                      try inputCallbackInternal(editState, .move(.right), moveRight)
                     case "D":
-                      try self.moveLeft(editState: editState)
+                      try inputCallbackInternal(editState, .move(.left), moveLeft)
                     default:
                       break
                   }
@@ -404,17 +490,17 @@ public class LineReader {
             }
           // ^[...
           case "A":
-            try self.moveHistory(editState: editState, direction: .previous)
+            try inputCallbackInternal(editState, .move(.up), { try self.moveHistory(editState: $0, direction: .previous) })
           case "B":
-            try self.moveHistory(editState: editState, direction: .next)
+            try inputCallbackInternal(editState, .move(.down), { try self.moveHistory(editState: $0, direction: .next) })
           case "C":
-            try self.moveRight(editState: editState)
+            try inputCallbackInternal(editState, .move(.right), moveRight)
           case "D":
-            try self.moveLeft(editState: editState)
+            try inputCallbackInternal(editState, .move(.left), moveLeft)
           case "H":
-            try self.moveHome(editState: editState)
+            try inputCallbackInternal(editState, .move(.home), moveHome)
           case "F":
-            try self.moveEnd(editState: editState)
+            try inputCallbackInternal(editState, .move(.end), moveEnd)
           default:
             break
         }
@@ -423,9 +509,9 @@ public class LineReader {
         let snd = self.readCharacter()
         switch snd {
           case "H":
-            try self.moveHome(editState: editState)
+            try inputCallbackInternal(editState, .move(.home), moveHome)
           case "F":
-            try self.moveEnd(editState: editState)
+            try inputCallbackInternal(editState, .move(.end), moveEnd)
           case "P":
             // F1
             break
@@ -443,11 +529,14 @@ public class LineReader {
         }
       case "b":
         // Alt+Left
-        try self.moveToWordStart(editState: editState)
+        try inputCallbackInternal(editState, .move(.wordStart), moveToWordStart)
       case "f":
         // Alt+Right
-        try self.moveToWordEnd(editState: editState)
+        try inputCallbackInternal(editState, .move(.wordEnd), moveToWordEnd)
       default:
+        if let char = fst?.unicodeScalars.first?.value {
+          _ = try handleCharacter(UInt8(char), editState: editState)
+        }
         break
     }
   }
@@ -553,6 +642,7 @@ public class LineReader {
                   AnsiCodes.beginningOfLine +
                   AnsiCodes.cursorDown(cursorRows) +
                   AnsiCodes.cursorForward(cursorCols)
+    refreshCallback?(editState.buffer)
     try self.output(text: commandBuf)
   }
 
