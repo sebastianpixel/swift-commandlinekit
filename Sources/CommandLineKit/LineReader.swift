@@ -164,7 +164,7 @@ public class LineReader {
   /// and to handle escape sequences.
   private func inputCallbackInternal(_ editState: EditState,
                                      _ input: Input?,
-                                     _ executeIfCallbackReturnsTrue: @escaping (EditState) throws -> Void) throws {
+                                     _ executeIfCallbackReturnsTrue: (EditState) throws -> Void) throws {
     guard let input = input else {
       try executeIfCallbackReturnsTrue(editState)
       return
