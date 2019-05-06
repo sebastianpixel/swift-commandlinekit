@@ -42,6 +42,7 @@ public class LineReader {
     case move(Direction)
     case character(Character)
     case controlCharacter(ControlCharacters)
+    case ShiftTab
 
     public enum Direction {
       case up, right, down, left, home, end, wordStart, wordEnd
@@ -510,6 +511,8 @@ public class LineReader {
             try inputCallbackInternal(editState, .move(.home), moveHome)
           case "F":
             try inputCallbackInternal(editState, .move(.end), moveEnd)
+          case "Z":
+            try inputCallbackInternal(editState, .ShiftTab, { _ in })
           default:
             break
         }
