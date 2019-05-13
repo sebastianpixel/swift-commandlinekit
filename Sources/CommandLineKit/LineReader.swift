@@ -239,6 +239,7 @@ public class LineReader {
   /// throw an error if the terminal cannot be written to.
   public func readLine(prompt: String,
                        maxCount: Int? = nil,
+                       printNewlineAfterSelection: Bool = true,
                        strippingNewline: Bool = true,
                        promptProperties: TextProperties = TextProperties.none,
                        readProperties: TextProperties = TextProperties.none,
@@ -247,6 +248,7 @@ public class LineReader {
     if self.termSupported {
       return try self.readLineSupported(prompt: prompt,
                                         maxCount: maxCount,
+                                        printNewlineAfterSelection: printNewlineAfterSelection,
                                         strippingNewline: strippingNewline,
                                         promptProperties: promptProperties,
                                         readProperties: readProperties,
@@ -271,6 +273,7 @@ public class LineReader {
 
   private func readLineSupported(prompt: String,
                                  maxCount: Int?,
+                                 printNewlineAfterSelection: Bool,
                                  strippingNewline: Bool,
                                  promptProperties: TextProperties,
                                  readProperties: TextProperties,
@@ -300,7 +303,7 @@ public class LineReader {
               try self.updateCursorPos(editState: editState)
             }
             // It's unclear to me why it's necessary to set the cursor to column 0
-            try self.output(text: "\n" + AnsiCodes.setCursorColumn(0))
+            try self.output(text: (printNewlineAfterSelection ? "\n" : "") + AnsiCodes.setCursorColumn(0))
             line = rv
             done = true
           }
