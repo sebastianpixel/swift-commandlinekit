@@ -49,13 +49,14 @@ internal class EditState {
        maxCount: Int? = nil,
        promptProperties: TextProperties = TextProperties.none,
        readProperties: TextProperties = TextProperties.none,
-       parenProperties: TextProperties = TextProperties.none) {
+       parenProperties: TextProperties = TextProperties.none,
+       buffer: String = "") {
     self.prompt = prompt
     self.promptProperties = promptProperties
     self.readProperties = readProperties
     self.parenProperties = parenProperties
     self.maxCount = maxCount
-    self.buffer = ""
+    self.buffer = buffer
     self.location = buffer.endIndex
   }
   

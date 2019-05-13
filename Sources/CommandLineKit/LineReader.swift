@@ -238,6 +238,7 @@ public class LineReader {
   /// of the line and reads the input from the user, returning it as a string. The method can
   /// throw an error if the terminal cannot be written to.
   public func readLine(prompt: String,
+                       line: String = "",
                        maxCount: Int? = nil,
                        printNewlineAfterSelection: Bool = true,
                        strippingNewline: Bool = true,
@@ -247,6 +248,7 @@ public class LineReader {
     tempBuf = nil
     if self.termSupported {
       return try self.readLineSupported(prompt: prompt,
+                                        line: line,
                                         maxCount: maxCount,
                                         printNewlineAfterSelection: printNewlineAfterSelection,
                                         strippingNewline: strippingNewline,
@@ -272,20 +274,26 @@ public class LineReader {
   }
 
   private func readLineSupported(prompt: String,
+                                 line: String,
                                  maxCount: Int?,
                                  printNewlineAfterSelection: Bool,
                                  strippingNewline: Bool,
                                  promptProperties: TextProperties,
                                  readProperties: TextProperties,
                                  parenProperties: TextProperties) throws -> String {
-    var line: String = ""
+    var line = line
     try self.withRawMode {
       try self.output(text: promptProperties.apply(to: prompt))
       let editState = EditState(prompt: prompt,
                                 maxCount: maxCount,
                                 promptProperties: promptProperties,
                                 readProperties: readProperties,
-                                parenProperties: parenProperties)
+                                parenProperties: parenProperties,
+                                buffer: line)
+      if !line.isEmpty {
+        try self.output(text: line)
+        try self.updateCursorPos(editState: editState)
+      }
       var done = false
       while !done {
         guard var char = self.readByte() else {
